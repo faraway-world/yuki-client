@@ -99,12 +99,10 @@ It shows:
 * how servers behave under long contexts
 * how fragile interfaces really are
 
-If you want abstractions, look elsewhere.
-If you want understanding, this is it.
-
 ## Known Limitations
 
 * No retry logic
 * No context pruning
 * No role-based formatting enforcement
 * Single conversation at a time
+* ... not yet
