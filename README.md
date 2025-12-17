@@ -15,13 +15,13 @@ This project exists to understand the system end-to-end — no SDKs, no abstract
 - Simple, inspectable codebase
 
 ## Architecture
-
+```
 Local Machine (Client)        Remote Machine (Inference)
 ┌─────────────────────┐      ┌──────────────────────────┐
 │  client.py          │ ---> │  llama-server            │
 │  chat memory (JSON) │ HTTP │  GGUF model              │
 └─────────────────────┘      └──────────────────────────┘
-
+```
 
 
 Inference runs remotely.  
