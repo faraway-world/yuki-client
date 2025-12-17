@@ -1,4 +1,3 @@
-```
 # Yuki — Minimal Streaming Client for llama.cpp
 
 Yuki is a minimal Python client for interacting with a remote `llama.cpp` inference server.
@@ -16,8 +15,6 @@ This project exists to understand the system end-to-end — no SDKs, no abstract
 - Simple, inspectable codebase
 
 ## Architecture
-
-```
 
 Local Machine (Client)        Remote Machine (Inference)
 ┌─────────────────────┐      ┌──────────────────────────┐
