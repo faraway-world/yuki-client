@@ -1,8 +1,7 @@
 # Yuki — Minimal Streaming Client for llama.cpp
 
-Yuki is a minimal Python client for interacting with a remote `llama.cpp` inference server.
-It supports real-time token streaming, persistent chat memory, and clean separation between
-interface and inference.
+Yuki is a minimal client for interacting with a remote `llama.cpp` inference server.  
+It now supports **both Python and Rust clients**, with streaming output, persistent chat memory, and clean separation between interface and inference.
 
 This project exists to understand the system end-to-end — no SDKs, no abstractions, no shortcuts.
 
@@ -18,7 +17,7 @@ This project exists to understand the system end-to-end — no SDKs, no abstract
 ```
 Local Machine (Client)        Remote Machine (Inference)
 ┌─────────────────────┐      ┌──────────────────────────┐
-│  client.py          │ ---> │  llama-server            │
+│  client.py/ main.rs │ ---> │  llama-server            │
 │  chat memory (JSON) │ HTTP │  GGUF model              │
 └─────────────────────┘      └──────────────────────────┘
 ```
@@ -26,11 +25,13 @@ Local Machine (Client)        Remote Machine (Inference)
 
 Inference runs remotely.  
 The client stays local.  
-Communication is plain HTTP.
+Communication is plain HTTP.  
+Rust client uses `tokio` async runtime; Python client uses `requests`.
 
 ## Requirements
 
-- Python 3.9+
+- **Python client:** Python 3.9+  
+- **Rust client:** Rust 1.70+, `cargo`, `tokio`, `reqwest`, `serde`  
 - `llama.cpp` built with `llama-server`
 - GGUF model
 - SSH access to the inference machine
@@ -66,6 +67,10 @@ ssh -L 8080:127.0.0.1:8080 -C -c aes128-ctr user@REMOTE_IP
 
 ```bash
 python3 client.py
+```
+or
+```bash
+cargo build --release
 ```
 
 Type normally. Output streams as tokens are generated.
