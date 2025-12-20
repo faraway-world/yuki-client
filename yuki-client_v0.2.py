@@ -71,6 +71,7 @@ def main():
         print("\nAssistant: ", end="", flush=True)
 
         reply = chat(messages)
+        
         messages.append({"role": "assistant", "content": reply})
 
 
