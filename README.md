@@ -105,4 +105,5 @@ It shows:
 * No context pruning
 * No role-based formatting enforcement
 * Single conversation at a time
-* ... not yet
+
+Working on fixing these and imporving the ux as well progressing with new features.
