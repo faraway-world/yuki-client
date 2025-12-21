@@ -41,7 +41,7 @@ async fn chat(client: &Client, messages: &Vec<Message>) -> anyhow::Result<String
         model: "local",
         messages,
         stream: true,
-        temperature: 0.6,
+        temperature: 0.8,
         max_tokens: 256,
     };
 
