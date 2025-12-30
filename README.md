@@ -51,12 +51,11 @@ Run your `llama-server` on your inference machine (example using Llama 3.2):
 ```bash
 ~/llama.cpp/build/bin/llama-server \
   -m ~/models/Llama-3.2-3B-Instruct-Q4_K_M.gguf \
-  -c 4096 \
-  --port 8080
+  -c 4096 
 
 ```
 
-### 2. Port Forwarding (Local Machine)
+### Port Forwarding (if ai hosted on remote machine)
 
 If the server is remote, tunnel the port to your local machine:
 
@@ -65,7 +64,7 @@ ssh -L 8080:127.0.0.1:8080 -C user@REMOTE_IP
 
 ```
 
-### 3. Running the Clients
+### 2. Running the Clients
 
 #### Python Client
 
