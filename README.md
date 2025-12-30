@@ -88,7 +88,7 @@ cargo run --release
 * **Type normally** to chat.
 * **Arrow Keys:** Move the cursor to fix typos or press **Up** to see previous messages.
 * **`clear`**: Wipes the current session memory and deletes the local `history.json`.
-* **`exit` or `quit**`: Safely closes the session.
+* **`exit` or `quit`**: Safely closes the session.
 
 ## Why Yuki Exists
 
