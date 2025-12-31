@@ -1,4 +1,4 @@
-This represents a standard active conversation log.
+This represents a standard active conversation history untill wiped using command clear.
 [
   {
     "role": "user",
