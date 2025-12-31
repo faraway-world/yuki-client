@@ -6,22 +6,26 @@ This project exists to understand the LLM system end-to-end—no SDKs, no comple
 
 ## Features
 
-- **True Streaming:** Token-by-token output for a zero-latency "live" feel.
-- **Persistent Memory:** Automatic conversation saving and loading via `history.json`.
-- **Enhanced UX:** Full arrow-key support and command history (powered by `readline` in Python and `rustyline` in Rust).
-- **Zero SDKs:** Built using standard HTTP requests to demonstrate how LLM APIs actually work.
-- **Cross-Platform:** Works locally or over SSH port forwarding for remote inference.
+- **True Streaming:** Token-by-token output using Server-Sent Events (SSE) for a zero-latency "live" feel.
+- **Named Chat Sessions:** Support for multiple separate conversations with tab-completion for existing logs.
+- **Persistent Memory:** - **History:** Automatic conversation saving to `history/`.
+  - **Summarization:** Use the `summarize` command to compress long histories into a "Memory Block" stored in `chats/`, saving context window space.
+  - **Backups:** Wiping a chat via `clear` automatically moves the history to `backups/` with a timestamp.
+- **Enhanced UX:** Full arrow-key support and command history (powered by `rustyline` in Rust).
+- **Zero SDKs:** Built using standard HTTP requests to demonstrate how OpenAI-compatible LLM APIs actually work.
 
 ## Architecture
 
 
 
 ```text
-Local Machine (Client)               Remote Machine (Inference)
-┌───────────────────────────────┐      ┌──────────────────────────┐
-│  Python/Rust Client           │ ---> │  llama-server            │
-│  History (history.json)       │ HTTP │  GGUF Model              │
-└───────────────────────────────┘      └──────────────────────────┘
+Local Machine (Client)                 Remote Machine (Inference)
+┌────────────────────────────────┐      ┌──────────────────────────┐
+│  Yuki (Rust/Python)            │      │  llama-server            │
+│  ├─ history/ (Full logs)       │ ---> │  GGUF Model              │
+│  ├─ chats/   (Summaries)       │ HTTP │  (Port 8080)             │
+│  └─ backups/ (Archived)        │      │                          │
+└────────────────────────────────┘      └──────────────────────────┘
 
 ```
 
@@ -30,15 +34,17 @@ Inference runs on the machine with the GPU; the client stays on your local machi
 ## Project Structure
 
 ```text
-yuki/
+yuki_client/
+├── history/           # Persistent JSON conversation logs
+├── chats/             # Compressed session summaries
+├── backups/           # Archived logs created upon 'clear'
 ├── python/
-│   ├── client.py            # Simple implementation using requests
-│   └── requirements.txt     # Python dependencies
-├── rust/
-│   ├── Cargo.toml           # Rust manifest and dependencies
-│   └── src/
-│       └── main.rs          # High-performance async implementation
-└── README.md
+│   ├── client.py      # Simple implementation using requests
+│   └── requirements.txt
+└── rust/
+    ├── Cargo.toml     # Rust manifest (reqwest, tokio, rustyline)
+    └── src/
+        └── main.rs    # Async implementation with custom tab-completion
 
 ```
 
@@ -46,7 +52,7 @@ yuki/
 
 ### 1. Start the Server (Remote Machine)
 
-Run your `llama-server` on your inference machine (example using Llama 3.2):
+Run your `llama-server` on your inference machine (example using the model Llama 3.2):
 
 ```bash
 ~/llama.cpp/build/bin/llama-server \
@@ -55,7 +61,7 @@ Run your `llama-server` on your inference machine (example using Llama 3.2):
 
 ```
 
-### Port Forwarding (if ai hosted on remote machine)
+### 2. Port Forwarding (If hosted remotely)
 
 If the server is remote, tunnel the port to your local machine:
 
@@ -64,49 +70,31 @@ ssh -L 8080:127.0.0.1:8080 -C user@REMOTE_IP
 
 ```
 
-### 2. Running the Clients
-
-#### Python Client
-
-```bash
-cd python
-pip install -r requirements.txt
-python3 client.py
-
-```
-
-#### Rust Client
+### 3. Running the Client (Rust)
 
 ```bash
 cd rust
+# The client will prompt for a Chat Name. Use Tab to see existing chats.
 cargo run --release
 
 ```
 
 ## Interactive Commands
 
-* **Type normally** to chat.
-* **Arrow Keys:** Move the cursor to fix typos or press **Up** to see previous messages.
-* **`clear`**: Wipes the current session memory and deletes the local `history.json`.
-* **`exit` or `quit`**: Safely closes the session.
+* **`Enter Chat Name`**: Type a new name to start fresh or an old name to resume. Use **Tab** to cycle through existing history files.
+* **`summarize`**: Forces the model to condense the current chat into 4 bullet points. It then clears the active history and saves the summary to `chats/` as the new starting context.
+* **`clear`**: Wipes the current session memory from the model and moves your current `history.json` to the `backups/` folder.
+* **`exit` or `quit**`: Safely closes the session.
 
 ## Why Yuki Exists
 
 Most AI applications hide the complexity behind massive SDKs. Yuki does the opposite. It is a "glass box" project designed to show:
 
-* How **Server-Sent Events (SSE)** stream tokens in real-time.
-* How the `messages` array grows and maintains state.
-* How simple it is to interact with GGUF models directly via HTTP.
-* The performance and safety differences between Python and Rust.
-
-## Known Limitations
-
-* **Context Limit:** No automatic context pruning; the message list grows until the model's limit is reached.
-* **Single Threaded:** Designed for one conversation at a time.
-* **Error Handling:** Basic retry logic for network interruptions is currently being improved.
-
-Fixing these as you read.
+* **SSE Parsing:** How `data: ` chunks are handled in real-time.
+* **Context Loading:** How the client checks for summaries vs. full history on boot.
+* **Memory Management:** The difference between raw history and summarized "Memory Blocks."
+* **System Design:** How to build a robust CLI with path-aware storage (absolute paths in `~/yuki_client`).
 
 ## License
 
-MIT - Feel free to use, study, break it, fix it.
+MIT - Feel free to use, study, break it, or fix it.
