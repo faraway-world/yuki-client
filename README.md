@@ -1,4 +1,4 @@
-# Yuki — Minimal Streaming Client for llama.cpp
+# Yuki — Minimal Streaming Client for llama.cpp/kobold.cpp
 
 Yuki is a high-performance, minimal client designed for interacting with a `llama.cpp` inference server. It provides both **Python** and **Rust** implementations, focusing on transparency and raw system understanding rather than heavy abstractions.
 
@@ -27,12 +27,12 @@ This project exists to understand the LLM system end-to-end—no SDKs, no comple
 
 ```text
 Local Machine (Client)                Remote Machine (Inference)
-┌────────────────────────────────┐      ┌──────────────────────────┐
-│  Yuki (Rust/Python)            │      │  llama-server            │
-│  ├─ history/ (Full logs)       │ ---> │  GGUF Model              │
-│  ├─ chats/   (Summaries)       │ HTTP │  (Port 8080)             │
-│  └─ backups/ (Archived)        │      │                          │
-└────────────────────────────────┘      └──────────────────────────┘
+┌────────────────────────────────┐      ┌────────────────────────────────┐
+│  Yuki (Rust/Python)            │      │  llama-server/kobold.server    │
+│  ├─ history/ (Full logs)       │ ---> │  GGUF Model                    │
+│  ├─ chats/   (Summaries)       │ HTTP │  (Port 8080 for llama          │
+│  └─ backups/ (Archived)        │      │  or 5001 ofr kobold)           │
+└────────────────────────────────┘      └────────────────────────────────┘
 
 ```
 
