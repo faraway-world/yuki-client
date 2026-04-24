@@ -1,8 +1,7 @@
 import json
 import os
+import sys
 import requests
-from prompt_toolkit import PromptSession
-from prompt_toolkit.history import FileHistory
 
 SERVER_URL = "http://127.0.0.1:8080/v1/chat/completions"
 HISTORY_FILE = "history.json"
@@ -10,19 +9,22 @@ HISTORY_FILE = "history.json"
 def load_history():
     if os.path.exists(HISTORY_FILE):
         try:
-            with open(HISTORY_FILE, "r") as f:
+            with open(HISTORY_FILE, 'r') as f:
                 msgs = json.load(f)
                 print(f"\033[93m--- Loaded history ({len(msgs)} messages) ---\033[0m")
                 return msgs
         except Exception:
-            return []
+            pass
     return []
 
 def save_history(messages):
-    with open(HISTORY_FILE, "w") as f:
-        json.dump(messages, f, indent=4)
+    try:
+        with open(HISTORY_FILE, 'w') as f:
+            json.dump(messages, f, indent=4)
+    except Exception as e:
+        print(f"Failed to save history: {e}")
 
-def chat_stream(messages):
+def chat(messages):
     payload = {
         "model": "local",
         "messages": messages,
@@ -31,62 +33,63 @@ def chat_stream(messages):
     
     full_reply = ""
     try:
-        # We use stream=True to handle the SSE (Server-Sent Events)
+        # We use stream=True to handle the Server-Sent Events (SSE)
         response = requests.post(SERVER_URL, json=payload, stream=True)
         response.raise_for_status()
 
         for line in response.iter_lines():
-            if line:
-                decoded_line = line.decode('utf-8')
-                if not decoded_line.startswith("data: "):
-                    continue
+            if not line:
+                continue
+            
+            line = line.decode('utf-8')
+            if not line.startswith("data: "):
+                continue
+            
+            data_str = line[6:]
+            if data_str == "[DONE]":
+                break
                 
-                data = decoded_line[6:]
-                if data == "[DONE]":
-                    break
+            try:
+                data = json.loads(data_str)
+                content = data['choices'][0]['delta'].get('content', '')
+                if content:
+                    print(content, end='', flush=True)
+                    full_reply += content
+            except json.JSONDecodeError:
+                continue
                 
-                try:
-                    chunk = json.loads(data)
-                    content = chunk['choices'][0]['delta'].get('content', '')
-                    if content:
-                        print(content, end='', flush=True)
-                        full_reply += content
-                except json.JSONDecodeError:
-                    continue
-                    
-        return full_reply
     except Exception as e:
-        print(f"\nError: {e}")
+        print(f"\nError during chat: {e}")
         return None
+        
+    return full_reply
 
 def main():
     messages = load_history()
-    # prompt_toolkit provides the 'rustyline' equivalent for Python
-    session = PromptSession(history=FileHistory(".yuki_history"))
-
     print("\033[96mYuki Chat (Python). Type 'exit' to quit or 'clear' to reset.\033[0m")
 
     while True:
         try:
-            user_input = session.prompt("\nYou: ").strip()
+            user_input = input("\nYou: ").strip()
             
             if not user_input:
                 continue
-            if user_input.lower() in ["exit", "quit"]:
+            if user_input.lower() in ['exit', 'quit']:
                 break
-            if user_input.lower() == "clear":
-                messages = []
+            
+            if user_input.lower() == 'clear':
+                messages.clear()
                 if os.path.exists(HISTORY_FILE):
                     os.remove(HISTORY_FILE)
                 print("History cleared.")
                 continue
 
             messages.append({"role": "user", "content": user_input})
-            
+
             print("\nAssistant: ", end='', flush=True)
-            reply = chat_stream(messages)
+            reply = chat(messages)
             
-            if reply:
+            if reply is not None:
                 messages.append({"role": "assistant", "content": reply})
                 save_history(messages)
             print()
