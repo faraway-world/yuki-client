@@ -77,19 +77,16 @@ cargo run --release
 
 ## Interactive Commands
 
-### Startup Screen
-
-* **`Tab`**: Cycle through existing chat names.
-* **`<name>`**: Enter a name to load or create a session.
-* **`<name> /delete`**: Deletes the specified chat files permanently from the system.
-
-### In-Chat Slash Commands
-
-* **`/load <name>`**: Instantly switch to another chat session (supports Tab-autocomplete).
-* **`/read <path>`**: Injects file content into the chat. Features **full terminal-style path completion** (e.g., `/read ~/Down[TAB]` -> `/read ~/Downloads/`).
-* **`/summarize`**: Condenses history into 4 bullet points, clearing the active history and saving the summary to `chats/`.
-* **`/clear`**: Wiped current session memory and moves `history.json` to `backups/`.
-* **`/exit` or `/quit**`: Safely closes the session.
+| Command | Description |
+| --- | --- |
+| `/vault list` | List files currently in the RAG vault |
+| `/vault add <path>` | Copy a local file (supports `~/`) into the vault |
+| `/vault rm <name>` | Remove a file from the vault (safely handles full paths) |
+| `/refresh` | Rebuild the vector index following vault changes |
+| `/read <path>` | Ingest a local file directly into the session |
+| `/think <on/off>` | Toggle terminal visibility of reasoning tokens |
+| `/summarize` | Distill history into a persistent technical summary |
+| `/help` | View the command menu |
 
 ## Why Yuki Exists
 
