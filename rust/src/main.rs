@@ -1,3 +1,4 @@
+use chrono::Local;
 use colored::*;
 use dirs::home_dir;
 use fastembed::{TextEmbedding, InitOptions, EmbeddingModel};
@@ -8,7 +9,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH, Instant};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
 use rustyline::Config;
@@ -118,6 +119,8 @@ impl Validator for YukiCompleter {}
 struct Message {
     role: String,
     content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timestamp: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -269,6 +272,7 @@ fn ensure_dirs() {
     fs::create_dir_all(root.join("chats")).ok();
     fs::create_dir_all(root.join("backups")).ok();
     fs::create_dir_all(root.join("vault")).ok();
+    fs::create_dir_all(root.join("memories")).ok();
 }
 
 fn get_file_paths(chat_name: &str) -> (PathBuf, PathBuf) {
@@ -340,6 +344,19 @@ fn get_vault_manifest() -> String {
     }
 }
 
+fn get_memories_manifest() -> String {
+    let memories_path = get_root_path().join("memories");
+    if let Ok(entries) = fs::read_dir(memories_path) {
+        let files: Vec<String> = entries.flatten()
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| n.ends_with(".md"))
+            .collect();
+        if files.is_empty() { "None".to_string() } else { files.join(", ") }
+    } else {
+        "None".to_string()
+    }
+}
+
 fn print_help() {
     println!("{}", "--- Command Help ---".magenta());
     println!("  /exit              - Exit the application");
@@ -350,6 +367,7 @@ fn print_help() {
     println!("  /vault rm <name>   - Remove a file from the RAG vault");
     println!("  /refresh           - Rebuild the RAG index");
     println!("  /read <path>       - Read content of a local file into the chat");
+    println!("  /memories          - List all persistent memory files");
     println!("  /think <on/off>    - Toggle visibility of model reasoning");
     println!("  /help              - Show this help message");
     println!();
@@ -357,6 +375,7 @@ fn print_help() {
 
 async fn chat_request(mut messages: Vec<Message>, show_thinking: bool, rag: &mut RagManager) -> Option<String> {
     let client = Client::new();
+    let start_time = Instant::now();
     
     loop {
         let request = ChatRequest { model: "local".to_string(), messages: messages.clone(), stream: true };
@@ -365,7 +384,7 @@ async fn chat_request(mut messages: Vec<Message>, show_thinking: bool, rag: &mut
         let mut full_reply = String::new();
         let mut is_thinking = false;
         let mut tag_buffer = String::new();
-        let mut tool_call: Option<(String, String)> = None; // (ToolName, Argument)
+        let mut tool_call: Option<(String, String, Option<String>)> = None; // (ToolName, Argument, Option<Content>)
 
         while let Some(item) = stream.next().await {
             let chunk = item.ok()?;
@@ -397,14 +416,28 @@ async fn chat_request(mut messages: Vec<Message>, show_thinking: bool, rag: &mut
                                         is_thinking = false;
                                         tag_buffer.clear();
                                     } else if tag_buffer.contains("/>") {
-                                        if tag_buffer.starts_with("<read path='") {
-                                            let path = tag_buffer.replace("<read path='", "").replace("'/>", "");
-                                            tool_call = Some(("read".to_string(), path.trim().to_string()));
+                                        if tag_buffer.contains("<read path=") {
+                                            let path = tag_buffer.replace("<read path=", "")
+                                                .replace("/>", "")
+                                                .replace("'", "")
+                                                .replace("\"", "");
+                                            tool_call = Some(("read".to_string(), path.trim().to_string(), None));
                                             tag_buffer.clear();
                                             break; 
-                                        } else if tag_buffer.starts_with("<search_vault query='") {
-                                            let query = tag_buffer.replace("<search_vault query='", "").replace("'/>", "");
-                                            tool_call = Some(("search".to_string(), query.trim().to_string()));
+                                        } else if tag_buffer.contains("<read_memory name=") {
+                                            let name = tag_buffer.replace("<read_memory name=", "")
+                                                .replace("/>", "")
+                                                .replace("'", "")
+                                                .replace("\"", "");
+                                            tool_call = Some(("read_memory".to_string(), name.trim().to_string(), None));
+                                            tag_buffer.clear();
+                                            break;
+                                        } else if tag_buffer.contains("<search_vault query=") {
+                                            let query = tag_buffer.replace("<search_vault query=", "")
+                                                .replace("/>", "")
+                                                .replace("'", "")
+                                                .replace("\"", "");
+                                            tool_call = Some(("search".to_string(), query.trim().to_string(), None));
                                             tag_buffer.clear();
                                             break;
                                         } else {
@@ -418,16 +451,59 @@ async fn chat_request(mut messages: Vec<Message>, show_thinking: bool, rag: &mut
                                             io::stdout().flush().ok();
                                             tag_buffer.clear();
                                         }
-                                    } else if tag_buffer.len() > 150 { 
-                                        for buffered_char in tag_buffer.chars() {
-                                            if is_thinking {
-                                                if show_thinking { print!("{}", buffered_char.to_string().truecolor(100, 100, 100)); }
-                                            } else {
-                                                print!("{}", buffered_char);
+                                    } else if tag_buffer.ends_with("</write_memory>") {
+                                        let start_tags = ["<write_memory name='", "<write_memory name=\""];
+                                        let mut found = false;
+                                        for start_tag in start_tags {
+                                            if let Some(start_idx) = tag_buffer.find(start_tag) {
+                                                let rest = &tag_buffer[start_idx + start_tag.len()..];
+                                                let end_quote = if start_tag.contains("'") { "'" } else { "\"" };
+                                                let closing_tag = format!("{}>", end_quote);
+                                                if let Some(end_name_idx) = rest.find(&closing_tag) {
+                                                    let name = &rest[..end_name_idx];
+                                                    let content_start = end_name_idx + closing_tag.len();
+                                                    let content_end = rest.len() - "</write_memory>".len();
+                                                    
+                                                    if content_end >= content_start {
+                                                        let content = &rest[content_start..content_end];
+                                                        tool_call = Some(("write_memory".to_string(), name.to_string(), Some(content.to_string())));
+                                                        tag_buffer.clear();
+                                                        found = true;
+                                                        break;
+                                                    }
+                                                }
                                             }
                                         }
-                                        io::stdout().flush().ok();
-                                        tag_buffer.clear();
+                                        if !found { tag_buffer.clear(); }
+                                        else { break; }
+                                    } else if tag_buffer.len() > 100 { 
+                                        let is_known_start = tag_buffer.starts_with("<read") || 
+                                                           tag_buffer.starts_with("<search_vault") || 
+                                                           tag_buffer.starts_with("<write_memory") ||
+                                                           tag_buffer.starts_with("<think");
+                                        
+                                        if !is_known_start {
+                                            for buffered_char in tag_buffer.chars() {
+                                                if is_thinking {
+                                                    if show_thinking { print!("{}", buffered_char.to_string().truecolor(100, 100, 100)); }
+                                                } else {
+                                                    print!("{}", buffered_char);
+                                                }
+                                            }
+                                            io::stdout().flush().ok();
+                                            tag_buffer.clear();
+                                        } else if tag_buffer.len() > 8000 { // Extreme limit for write_memory
+                                            // Something is wrong, just flush it
+                                            for buffered_char in tag_buffer.chars() {
+                                                if is_thinking {
+                                                    if show_thinking { print!("{}", buffered_char.to_string().truecolor(100, 100, 100)); }
+                                                } else {
+                                                    print!("{}", buffered_char);
+                                                }
+                                            }
+                                            io::stdout().flush().ok();
+                                            tag_buffer.clear();
+                                        }
                                     }
                                 } else {
                                     if is_thinking {
@@ -447,8 +523,8 @@ async fn chat_request(mut messages: Vec<Message>, show_thinking: bool, rag: &mut
             if tool_call.is_some() { break; }
         }
 
-        if let Some((tool, arg)) = tool_call {
-            messages.push(Message { role: "assistant".to_string(), content: full_reply.clone() });
+        if let Some((tool, arg, content)) = tool_call {
+            messages.push(Message { role: "assistant".to_string(), content: full_reply.clone(), timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()) });
             
             if tool == "read" {
                 let vault_path = get_root_path().join("vault").join(&arg);
@@ -457,12 +533,52 @@ async fn chat_request(mut messages: Vec<Message>, show_thinking: bool, rag: &mut
                         println!("{}", format!("  ✓ ReadFile {}", arg).green());
                         messages.push(Message { 
                             role: "system".to_string(), 
-                            content: format!("### SOURCE DATA START ###\n[FILE: {}]\n{}\n### SOURCE DATA END ###\n\nInstructions: MANDATORY: Once a tool result is provided, your NEXT response MUST start with 'HANDSHAKE: [{}] processed.' followed by your analysis.", arg, content, arg)
+                            content: format!("### SOURCE DATA START ###\n[FILE: {}]\n{}\n### SOURCE DATA END ###\n\nInstructions: Data provided. Proceed.", arg, content),
+                            timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs())
                         });
                     }
                     Err(_) => {
                         println!("{}", format!("  ✗ Failed to read {}", arg).red());
-                        messages.push(Message { role: "system".to_string(), content: format!("TOOL_RESULT: Error reading file {}", arg) });
+                        messages.push(Message { role: "system".to_string(), content: format!("TOOL_RESULT: Error reading file {}", arg), timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()) });
+                    }
+                }
+            } else if tool == "read_memory" {
+                let memory_path = get_root_path().join("memories").join(&arg);
+                match fs::read_to_string(memory_path) {
+                    Ok(content) => {
+                        let line_count = content.lines().count();
+                        println!("{}", format!("  ✓ ReadMemory {} ({} lines)", arg, line_count).green());
+                        messages.push(Message { 
+                            role: "system".to_string(), 
+                            content: format!("### MEMORY DATA START ###\n[MEMORY: {}]\n{}\n### MEMORY DATA END ###\n\nInstructions: Memory provided. Proceed.", arg, content),
+                            timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs())
+                        });
+                    }
+                    Err(_) => {
+                        println!("{}", format!("  ✗ Failed to read memory {}", arg).red());
+                        messages.push(Message { role: "system".to_string(), content: format!("TOOL_RESULT: Error reading memory {}", arg), timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()) });
+                    }
+                }
+            } else if tool == "write_memory" {
+                if let Some(c) = content {
+                    let memory_path = get_root_path().join("memories").join(&arg);
+                    let is_new = !memory_path.exists();
+                    let line_count = c.lines().count();
+                    
+                    match fs::write(&memory_path, &c) {
+                        Ok(_) => {
+                            let action = if is_new { "Created" } else { "Updated" };
+                            println!("{}", format!("  ✓ {}Memory {} ({} lines)", action, arg, line_count).green());
+                            messages.push(Message { 
+                                role: "system".to_string(), 
+                                content: format!("SUCCESS: Memory [{}] has been updated/created. You can continue with your response or acknowledge the save.", arg),
+                                timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs())
+                            });
+                        }
+                        Err(e) => {
+                            println!("{}", format!("  ✗ Failed to write memory {}: {}", arg, e).red());
+                            messages.push(Message { role: "system".to_string(), content: format!("TOOL_RESULT: Error writing memory {}: {}", arg, e), timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()) });
+                        }
                     }
                 }
             } else if tool == "search" {
@@ -470,15 +586,18 @@ async fn chat_request(mut messages: Vec<Message>, show_thinking: bool, rag: &mut
                 println!("{}", "  ✓ SearchVault".blue());
                 messages.push(Message { 
                     role: "system".to_string(), 
-                    content: format!("SEARCH_RESULTS for [{}]: \n\n{}\n\nInstructions: MANDATORY: Once a tool result is provided, your NEXT response MUST start with 'HANDSHAKE: [Search] processed.' followed by your analysis.", arg, context)
+                    content: format!("SEARCH_RESULTS for [{}]: \n\n{}\n\nInstructions: MANDATORY: Once a tool result is provided, your NEXT response MUST start with 'HANDSHAKE: [Search] processed.' followed by your analysis.", arg, context),
+                    timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs())
                 });
             }
         } else {
-            println!();
+            let duration = start_time.elapsed();
+            println!("{}", format!("\n[Response took: {:.2}s]", duration.as_secs_f64()).dimmed());
             return Some(full_reply);
         }
     }
 }
+
 
 #[tokio::main]
 async fn main() {
@@ -533,6 +652,7 @@ async fn main() {
     let (hp, sp) = get_file_paths(current_chat);
     let mut messages: Vec<Message> = Vec::new();
     let mut show_thinking = true;
+    let session_start = Instant::now();
 
     if sp.exists() {
         if let Ok(data) = fs::read_to_string(&sp) {
@@ -562,6 +682,16 @@ async fn main() {
                 if input == "/exit" { break; }
                 if input == "/help" { print_help(); continue; }
 
+                if input == "/memories" {
+                    println!("{}", "--- Persistent Memories ---".magenta());
+                    let manifest = get_memories_manifest();
+                    if manifest == "None" { println!(" No memories saved yet."); }
+                    else {
+                        for m in manifest.split(", ") { println!(" • {}", m.cyan()); }
+                    }
+                    continue;
+                }
+
                 if input.starts_with("/think ") {
                     let arg = &input[7..];
                     if arg == "on" { show_thinking = true; println!("{}", "[System] Reasoning visibility: ON".green()); }
@@ -581,15 +711,16 @@ async fn main() {
 
                             let sys_msg = Message {
                                 role: "system".to_string(),
-                                content: format!("### SOURCE DATA START ###\n[FILE: {}]\n{}\n### SOURCE DATA END ###\n\nInstructions: You have just been provided with the data above. Acknowledge the specific file content provided. If you have finished processing the data, start your response by confirming the source name.", filename, content),
+                                content: format!("### SOURCE DATA START ###\n[FILE: {}]\n{}\n### SOURCE DATA END ###\n\nInstructions: You have just been provided with the data above. Proceed with your analysis or response.", filename, content),
+                                timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs())
                             };
                             active_context.insert(0, sys_msg);
-                            active_context.push(Message { role: "user".to_string(), content: format!("Please analyze the file: {}", filename) });
+                            active_context.push(Message { role: "user".to_string(), content: format!("Please analyze the file: {}", filename), timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()) });
 
                             if let Some(reply) = chat_request(active_context, show_thinking, &mut rag).await {
                                 println!("{}", "[System] Direct file upload complete. Model is now aware of the full content.".green());
-                                messages.push(Message { role: "user".to_string(), content: format!("[File: {} read]", filename) });
-                                messages.push(Message { role: "assistant".to_string(), content: reply });
+                                messages.push(Message { role: "user".to_string(), content: format!("[File: {} read]", filename), timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()) });
+                                messages.push(Message { role: "assistant".to_string(), content: reply, timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()) });
                                 fs::write(&hp, serde_json::to_string_pretty(&messages).unwrap()).ok();
                             }
                         }
@@ -652,30 +783,74 @@ async fn main() {
                 if input == "/summarize" {
                     println!("{}", "[System] Summarizing...".magenta());
                     let mut req = messages.clone();
-                    req.push(Message { role: "user".to_string(), content: "Summarize into 4 technical points.".to_string() });
+                    req.push(Message { role: "user".to_string(), content: "Summarize into 4 technical points.".to_string(), timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()) });
                     if let Some(reply) = chat_request(req, show_thinking, &mut rag).await {
-                        messages = vec![Message { role: "system".to_string(), content: format!("SUMMARY:\n{}", reply) }];
+                        messages = vec![Message { role: "system".to_string(), content: format!("SUMMARY:\n{}", reply), timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()) }];
                         fs::write(&sp, serde_json::to_string_pretty(&messages).unwrap()).ok();
                         if hp.exists() { fs::remove_file(&hp).ok(); }
                     }
                     continue;
                 }
 
-                let manifest = get_vault_manifest();
-                let mut active_context = messages.clone();
+                let now_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+                let last_ts = messages.last().and_then(|m| m.timestamp).unwrap_or(now_ts);
+                let elapsed_since_last = now_ts - last_ts;
+                
+                let time_info = if elapsed_since_last > 60 {
+                    let mins = elapsed_since_last / 60;
+                    let hours = mins / 60;
+                    if hours > 0 {
+                        format!("It has been {} hours and {} minutes since the last interaction.", hours, mins % 60)
+                    } else {
+                        format!("It has been {} minutes since the last interaction.", mins)
+                    }
+                } else {
+                    "Just a moment has passed since the last interaction.".to_string()
+                };
+
+                let cwd = std::env::current_dir().unwrap_or_default().display().to_string();
+                let local_time = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                let vault_manifest = get_vault_manifest();
+                let memory_manifest = get_memories_manifest();
+                let session_elapsed = session_start.elapsed().as_secs();
+
                 let awareness_msg = Message {
                     role: "system".to_string(),
-                    content: format!("You see these files in the vault: [{}]. 
-                    - To see the FULL content of a specific file, output ONLY: <read path='filename'/>. 
-                    - To search for relevant snippets across all files, output ONLY: <search_vault query='key phrases'/>.
-                    - MANDATORY: Once a tool result is provided, your NEXT response MUST start with 'HANDSHAKE: [Source] processed.' followed by your analysis.", manifest),
+                    content: format!(
+                        "SYSTEM NOTIFICATION:
+[IDENTITY & MISSION]
+You are the Yuki AI. You have a LONG-TERM MEMORY system via the 'memories/' directory. You MUST proactively use this memory to provide continuity across sessions.
+
+[ENVIRONMENT]
+Time: {}
+Location: {}
+Session Start: {}s ago
+{}
+
+[MEMORY & KNOWLEDGE]
+Vault (RAG): [{}]
+Persistent Memory Files: [{}]
+
+[CRITICAL COMMANDS]
+- CHECK MEMORY: If you see files in 'Persistent Memory Files' and the user asks about past context, you MUST use <read_memory name='filename.md'/>.
+- SAVE MEMORY: If the user provides new important info, you MUST use <write_memory name='filename.md'>Content</write_memory>.
+- SEARCH: Use <search_vault query='...'/> for general project context.
+
+[DIRECTIVE]
+DO NOT claim you don't know something if there are files in your 'Persistent Memory Files' list that you haven't read yet. Read them first.
+
+MANDATORY: If you use a tool, you must acknowledge the result naturally in your response.", 
+                        local_time, cwd, session_elapsed, time_info, vault_manifest, memory_manifest),
+                    timestamp: Some(now_ts)
                 };
+
+                let mut active_context = messages.clone();
                 active_context.insert(0, awareness_msg);
-                active_context.push(Message { role: "user".to_string(), content: input.to_string() });
+                active_context.push(Message { role: "user".to_string(), content: input.to_string(), timestamp: Some(now_ts) });
                 
                 if let Some(reply) = chat_request(active_context, show_thinking, &mut rag).await {
-                    messages.push(Message { role: "user".to_string(), content: input.to_string() });
-                    messages.push(Message { role: "assistant".to_string(), content: reply });
+                    messages.push(Message { role: "user".to_string(), content: input.to_string(), timestamp: Some(now_ts) });
+                    messages.push(Message { role: "assistant".to_string(), content: reply, timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()) });
                     fs::write(&hp, serde_json::to_string_pretty(&messages).unwrap()).ok();
                 }
             },
