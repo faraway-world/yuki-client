@@ -416,12 +416,12 @@ async fn chat_request(mut messages: Vec<Message>, show_thinking: bool, rag: &mut
                                         is_thinking = false;
                                         tag_buffer.clear();
                                     } else if tag_buffer.contains("/>") {
-                                        if tag_buffer.contains("<read path=") {
-                                            let path = tag_buffer.replace("<read path=", "")
+                                        if tag_buffer.contains("<read name=") || tag_buffer.contains("<read path=") {
+                                            let name = tag_buffer.replace("<read name=", "").replace("<read path=", "")
                                                 .replace("/>", "")
                                                 .replace("'", "")
                                                 .replace("\"", "");
-                                            tool_call = Some(("read".to_string(), path.trim().to_string(), None));
+                                            tool_call = Some(("read".to_string(), name.trim().to_string(), None));
                                             tag_buffer.clear();
                                             break; 
                                         } else if tag_buffer.contains("<read_memory name=") {
@@ -441,6 +441,7 @@ async fn chat_request(mut messages: Vec<Message>, show_thinking: bool, rag: &mut
                                             tag_buffer.clear();
                                             break;
                                         } else {
+                                            // Flush tag_buffer if it's not a recognized tool
                                             for buffered_char in tag_buffer.chars() {
                                                 if is_thinking {
                                                     if show_thinking { print!("{}", buffered_char.to_string().truecolor(100, 100, 100)); }
@@ -474,36 +475,32 @@ async fn chat_request(mut messages: Vec<Message>, show_thinking: bool, rag: &mut
                                                 }
                                             }
                                         }
-                                        if !found { tag_buffer.clear(); }
-                                        else { break; }
-                                    } else if tag_buffer.len() > 100 { 
-                                        let is_known_start = tag_buffer.starts_with("<read") || 
-                                                           tag_buffer.starts_with("<search_vault") || 
-                                                           tag_buffer.starts_with("<write_memory") ||
-                                                           tag_buffer.starts_with("<think");
-                                        
-                                        if !is_known_start {
-                                            for buffered_char in tag_buffer.chars() {
-                                                if is_thinking {
-                                                    if show_thinking { print!("{}", buffered_char.to_string().truecolor(100, 100, 100)); }
-                                                } else {
-                                                    print!("{}", buffered_char);
+                                        if !found { 
+                                            // Only clear if it's clearly NOT going to be a write_memory tag
+                                            if tag_buffer.len() > 8000 {
+                                                for buffered_char in tag_buffer.chars() {
+                                                    if is_thinking {
+                                                        if show_thinking { print!("{}", buffered_char.to_string().truecolor(100, 100, 100)); }
+                                                    } else {
+                                                        print!("{}", buffered_char);
+                                                    }
                                                 }
+                                                io::stdout().flush().ok();
+                                                tag_buffer.clear();
                                             }
-                                            io::stdout().flush().ok();
-                                            tag_buffer.clear();
-                                        } else if tag_buffer.len() > 8000 { // Extreme limit for write_memory
-                                            // Something is wrong, just flush it
-                                            for buffered_char in tag_buffer.chars() {
-                                                if is_thinking {
-                                                    if show_thinking { print!("{}", buffered_char.to_string().truecolor(100, 100, 100)); }
-                                                } else {
-                                                    print!("{}", buffered_char);
-                                                }
-                                            }
-                                            io::stdout().flush().ok();
-                                            tag_buffer.clear();
                                         }
+                                        else { break; }
+                                    } else if tag_buffer.len() > 100 && !tag_buffer.starts_with("<write_memory") { 
+                                        // If it's not a write_memory tag and it's getting long, it's probably just text
+                                        for buffered_char in tag_buffer.chars() {
+                                            if is_thinking {
+                                                if show_thinking { print!("{}", buffered_char.to_string().truecolor(100, 100, 100)); }
+                                            } else {
+                                                print!("{}", buffered_char);
+                                            }
+                                        }
+                                        io::stdout().flush().ok();
+                                        tag_buffer.clear();
                                     }
                                 } else {
                                     if is_thinking {
@@ -516,6 +513,7 @@ async fn chat_request(mut messages: Vec<Message>, show_thinking: bool, rag: &mut
                                     io::stdout().flush().ok();
                                 }
                             }
+                            if tool_call.is_some() { break; }
                         }
                     }
                 }
@@ -530,16 +528,16 @@ async fn chat_request(mut messages: Vec<Message>, show_thinking: bool, rag: &mut
                 let vault_path = get_root_path().join("vault").join(&arg);
                 match fs::read_to_string(vault_path) {
                     Ok(content) => {
-                        println!("{}", format!("  ✓ ReadFile {}", arg).green());
+                        println!("{}", format!("  ✓ ReadVault {}", arg).green());
                         messages.push(Message { 
                             role: "system".to_string(), 
-                            content: format!("### SOURCE DATA START ###\n[FILE: {}]\n{}\n### SOURCE DATA END ###\n\nInstructions: Data provided. Proceed.", arg, content),
+                            content: format!("### VAULT DATA START ###\n[FILE: {}]\n{}\n### VAULT DATA END ###\n\nInstructions: Vault data provided. Proceed.", arg, content),
                             timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs())
                         });
                     }
                     Err(_) => {
-                        println!("{}", format!("  ✗ Failed to read {}", arg).red());
-                        messages.push(Message { role: "system".to_string(), content: format!("TOOL_RESULT: Error reading file {}", arg), timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()) });
+                        println!("{}", format!("  ✗ Failed to read vault file {}", arg).red());
+                        messages.push(Message { role: "system".to_string(), content: format!("TOOL_RESULT: Error reading vault file {}", arg), timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()) });
                     }
                 }
             } else if tool == "read_memory" {
@@ -562,16 +560,27 @@ async fn chat_request(mut messages: Vec<Message>, show_thinking: bool, rag: &mut
             } else if tool == "write_memory" {
                 if let Some(c) = content {
                     let memory_path = get_root_path().join("memories").join(&arg);
-                    let is_new = !memory_path.exists();
+                    let old_size = if memory_path.exists() {
+                        fs::read_to_string(&memory_path).map(|s| s.len()).unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    let new_size = c.len();
                     let line_count = c.lines().count();
                     
                     match fs::write(&memory_path, &c) {
                         Ok(_) => {
-                            let action = if is_new { "Created" } else { "Updated" };
-                            println!("{}", format!("  ✓ {}Memory {} ({} lines)", action, arg, line_count).green());
+                            let action = if old_size == 0 { 
+                                "CreatedMemory" 
+                            } else if new_size < old_size {
+                                "CuratedMemory"
+                            } else {
+                                "UpdatedMemory"
+                            };
+                            println!("{}", format!("  ✓ {} {} ({} lines)", action, arg, line_count).green());
                             messages.push(Message { 
                                 role: "system".to_string(), 
-                                content: format!("SUCCESS: Memory [{}] has been updated/created. You can continue with your response or acknowledge the save.", arg),
+                                content: format!("SUCCESS: Memory [{}] has been {}. You can continue with your response.", arg, action.to_lowercase()),
                                 timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs())
                             });
                         }
@@ -814,12 +823,27 @@ async fn main() {
                 let memory_manifest = get_memories_manifest();
                 let session_elapsed = session_start.elapsed().as_secs();
 
+                // v0.9.0 Sustainable Memory Counter
+                let turn_count = messages.len() / 2;
+                let curation_trigger = if turn_count > 0 && turn_count % 10 == 0 {
+                    "\n[SYSTEM NOTIFICATION: Memory maintenance cycle. Review your Persistent Memories and compress/curate any that are nearing the 2000 character limit, especially user_preferences.md.]"
+                } else {
+                    ""
+                };
+
                 let awareness_msg = Message {
                     role: "system".to_string(),
                     content: format!(
                         "SYSTEM NOTIFICATION:
 [IDENTITY & MISSION]
-You are the Yuki AI. You have a LONG-TERM MEMORY system via the 'memories/' directory. You MUST proactively use this memory to provide continuity across sessions.
+You are the Yuki AI. You have a dual-layer knowledge system:
+1. VAULT (RAG): Static project files. Use for technical reference.
+2. PERSISTENT MEMORY: Long-term files in 'memories/'. Use for user traits, project status, and continuity.
+
+[SUSTAINABILITY RULES]
+- HARD LIMIT: Memory files MUST NOT exceed 2000 characters.
+- CURATION: If a memory file is large, you MUST compress it (remove old/irrelevant info) when updating.
+- PREFERENCES: Actively maintain 'user_preferences.md' to store user style, recurring tasks, and traits.
 
 [ENVIRONMENT]
 Time: {}
@@ -828,19 +852,21 @@ Session Start: {}s ago
 {}
 
 [MEMORY & KNOWLEDGE]
-Vault (RAG): [{}]
+Vault (RAG) Files: [{}]
 Persistent Memory Files: [{}]
+{}
 
-[CRITICAL COMMANDS]
-- CHECK MEMORY: If you see files in 'Persistent Memory Files' and the user asks about past context, you MUST use <read_memory name='filename.md'/>.
-- SAVE MEMORY: If the user provides new important info, you MUST use <write_memory name='filename.md'>Content</write_memory>.
-- SEARCH: Use <search_vault query='...'/> for general project context.
+[CRITICAL TOOLS]
+- READ VAULT: To read a file from the 'Vault (RAG) Files' list, you MUST use <read name='filename.ext'/>.
+- CHECK MEMORY: To read a file from 'Persistent Memory Files', you MUST use <read_memory name='filename.md'/>.
+- SAVE/CURATE MEMORY: To save or compress memory, use <write_memory name='filename.md'>Content</write_memory>.
+- SEARCH VAULT: Use <search_vault query='...'/> for broad RAG searches.
 
 [DIRECTIVE]
-DO NOT claim you don't know something if there are files in your 'Persistent Memory Files' list that you haven't read yet. Read them first.
+DO NOT claim you don't know something if there are files in your manifests that you haven't read yet. Read them first using the correct tool.
 
 MANDATORY: If you use a tool, you must acknowledge the result naturally in your response.", 
-                        local_time, cwd, session_elapsed, time_info, vault_manifest, memory_manifest),
+                        local_time, cwd, session_elapsed, time_info, vault_manifest, memory_manifest, curation_trigger),
                     timestamp: Some(now_ts)
                 };
 
