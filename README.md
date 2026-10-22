@@ -1,9 +1,12 @@
 # Yuki — Minimal Streaming Client for llama.cpp/kobold.cpp
 
-Yuki is a high-performance, minimal client designed for interacting with a `llama.cpp` inference server. It provides both **Python** and **Rust** implementations, focusing on transparency and raw system understanding rather than heavy abstractions.
+Yuki is a high-performance, minimal client designed for interacting with a `llama.cpp` inference server. It provides both **Rust** and **Python** implementations, focusing on transparency and raw system understanding rather than heavy abstractions.
 
 This project exists to understand the LLM system end-to-end—no SDKs, no complex frameworks, no shortcuts.
 
+<img width="620" height="631" alt="yuki" src="https://github.com/user-attachments/assets/8483f8c2-be54-4daa-841e-9f5eb7493886" />
+
+---
 ## Features
 
 * **True Streaming:** Token-by-token output using Server-Sent Events (SSE) for a zero-latency "live" feel.
