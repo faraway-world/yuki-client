@@ -291,6 +291,19 @@ fn create_backup(chat_name: &str, hist_path: &Path) {
     }
 }
 
+fn save_history(hp: &Path, sp_exists: bool, messages: &[Message]) {
+    let incremental_messages: &[Message] = if sp_exists
+        && !messages.is_empty()
+        && messages[0].role == "system"
+        && (messages[0].content.starts_with("SUMMARY:\n") || messages[0].content.starts_with("PREVIOUS_CONTEXT_SUMMARY:\n"))
+    {
+        &messages[1..]
+    } else {
+        messages
+    };
+    fs::write(hp, serde_json::to_string_pretty(incremental_messages).unwrap_or_default()).ok();
+}
+
 fn get_available_chats() -> Vec<String> {
     let root = get_root_path();
     let history_dir = root.join("history");
@@ -663,16 +676,30 @@ async fn main() {
     let mut show_thinking = true;
     let session_start = Instant::now();
 
+    let mut base_summary_content: Option<String> = None;
+
     if sp.exists() {
         if let Ok(data) = fs::read_to_string(&sp) {
-            messages = serde_json::from_str(&data).unwrap_or_default();
+            let summary_msgs: Vec<Message> = serde_json::from_str(&data).unwrap_or_default();
+            if let Some(first) = summary_msgs.first() {
+                base_summary_content = Some(first.content.clone());
+            }
+            messages = summary_msgs;
             println!("{}", "--- Base Summary Loaded ---".yellow());
         }
     }
     if hp.exists() {
         if let Ok(data) = fs::read_to_string(&hp) {
             let hist: Vec<Message> = serde_json::from_str(&data).unwrap_or_default();
-            messages.extend(hist);
+            let filtered_hist: Vec<Message> = hist.into_iter().filter(|m| {
+                if let Some(ref base_sum) = base_summary_content {
+                    if m.role == "system" && (&m.content == base_sum || m.content.starts_with("SUMMARY:\n") || m.content.starts_with("PREVIOUS_CONTEXT_SUMMARY:\n")) {
+                        return false;
+                    }
+                }
+                true
+            }).collect();
+            messages.extend(filtered_hist);
             println!("{}", "--- Incremental History Appended ---".yellow());
         }
     }
@@ -730,7 +757,7 @@ async fn main() {
                                 println!("{}", "[System] Direct file upload complete. Model is now aware of the full content.".green());
                                 messages.push(Message { role: "user".to_string(), content: format!("[File: {} read]", filename), timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()) });
                                 messages.push(Message { role: "assistant".to_string(), content: reply, timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()) });
-                                fs::write(&hp, serde_json::to_string_pretty(&messages).unwrap()).ok();
+                                save_history(&hp, sp.exists(), &messages);
                             }
                         }
                         Err(e) => println!("{}: {}", "[Error] Could not read file".red(), e),
@@ -877,7 +904,7 @@ MANDATORY: If you use a tool, you must acknowledge the result naturally in your 
                 if let Some(reply) = chat_request(active_context, show_thinking, &mut rag).await {
                     messages.push(Message { role: "user".to_string(), content: input.to_string(), timestamp: Some(now_ts) });
                     messages.push(Message { role: "assistant".to_string(), content: reply, timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()) });
-                    fs::write(&hp, serde_json::to_string_pretty(&messages).unwrap()).ok();
+                    save_history(&hp, sp.exists(), &messages);
                 }
             },
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,

@@ -1,0 +1,11 @@
+# Rust build artifacts
+target/
+rust/target/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment and local configs
+.env
